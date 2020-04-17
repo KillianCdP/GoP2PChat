@@ -2,7 +2,7 @@ package main
 
 import (
 	"GoP2PChat/config"
-	"GoP2PChat/host"
+	"GoP2PChat/internals/host"
 	"context"
 	"crypto/rand"
 	"flag"
@@ -12,8 +12,6 @@ import (
 )
 
 func main() {
-
-	fmt.Println("Started")
 	help := flag.Bool("help", false, "Display Help")
 	cfg, err := config.ParseFlags()
 
@@ -28,6 +26,8 @@ func main() {
 
 		os.Exit(0)
 	}
+
+	fmt.Println("Started")
 
 	ctx := context.Background()
 	r := rand.Reader
