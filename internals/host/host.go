@@ -1,18 +1,27 @@
 package host
 
 import (
+	"GoP2PChat/internals/message"
+	"GoP2PChat/internals/user"
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 	"os"
+	"strings"
 
 	"GoP2PChat/config"
 	"github.com/multiformats/go-multiaddr"
 )
+
+var userName string
+
+var users []user.User
 
 // Start starts the client
 func Start(ctx context.Context, prvKey crypto.PrivKey, config config.Config) {
@@ -33,54 +42,106 @@ func Start(ctx context.Context, prvKey crypto.PrivKey, config config.Config) {
 
 	fmt.Printf("\n[*] Your MultiAddress is: /ip4/%s/tcp/%d/p2p/%s\n", "0.0.0.0", config.ListenPort, host.ID().Pretty())
 
+	userName = user.GenerateUserName()
+	fmt.Printf("\n[*] Your user name is %s\n ", userName)
+
 	peerChan := initMDNS(ctx, host, config.RendezvousString)
 
-	peer := <-peerChan // Block until we discover a peer
-	fmt.Println("Found peer:", peer, ", connecting")
+	for addrInfo := range peerChan {
+		fmt.Println("Found addrInfo:", addrInfo, ", connecting")
 
-	if err := host.Connect(ctx, peer); err != nil {
-		fmt.Println("Connection failed:", err)
+		if err := host.Connect(ctx, addrInfo); err != nil {
+			fmt.Println("Connection failed:", err)
+		}
+
+		stream, err := host.NewStream(ctx, addrInfo.ID, protocol.ID(config.ProtocolID))
+
+		if err != nil {
+			fmt.Println("Stream open failed:", err)
+		} else {
+			addUser(addrInfo, stream)
+			handleStream(stream)
+		}
 	}
 
-	stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
-
-	if err != nil {
-		fmt.Println("Stream open failed:", err)
-	} else {
-		rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-		go writeData(rw)
-		go readData(rw)
-		fmt.Println("Connected to :", peer)
-	}
+	listenInput()
 
 	select {}
 }
 
 func handleStream(stream network.Stream) {
-	fmt.Println("Got a new stream !")
-
-	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-	go readData(rw)
-	go writeData(rw)
+	fmt.Println("New stream !")
+	r := bufio.NewReader(bufio.NewReader(stream))
+	go readData(r)
 }
 
-func readData(rw *bufio.ReadWriter) {
+func addUser(aI peer.AddrInfo, s network.Stream) {
+	users = append(users, user.New(aI, "Anonymous", s))
+}
+
+func readData(r *bufio.Reader) {
+	messageUnmarshaller := json.NewDecoder(r)
+	message := message.Message{}
 	for {
-		str, err := rw.ReadString('\n')
+		//str, err := r.ReadString('\n')
+		err := messageUnmarshaller.Decode(&message)
 		if err != nil {
-			fmt.Println("Error reading from buffer")
+			fmt.Println("Could not unmarshal received message")
+		}
+
+		fmt.Printf("Received message %+v\n", message)
+	}
+}
+
+func listenInput() {
+	stdReader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Printf("> ")
+		sendData, err := stdReader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading from stdin")
 			panic(err)
 		}
 
-		if str == "" {
+		parseInput(sendData)
+	}
+}
+
+func parseInput(input string) {
+	if !strings.HasPrefix(input, "/") {
+		return
+	}
+	input = strings.TrimSuffix(input, "/")
+	params := strings.Split(input, " ")
+
+	if len(params) < 2 {
+		fmt.Println("Command too short")
+		return
+	}
+
+	switch params[0] {
+	case "message":
+		u, err := getUser(users, params[1])
+		if err != nil {
+			fmt.Println(err)
 			return
 		}
-
-		if str != "\n" {
-			fmt.Printf("\x1b[32m%s\x1b[0m> ", str)
+		u.SendMessage(message.Message{
+			MessageType: message.TextMessage,
+			Message:     strings.Join(params[2:], " "),
+			RoomName:    "",
+		})
+	case "broadcast":
+		m := message.Message{
+			MessageType: message.Broadcast,
+			Message:     strings.Join(params[2:], " "),
+			RoomName:    "",
 		}
+		for _, u := range(users) {
+			u.SendMessage(m)
+		}
+
 	}
 }
 
